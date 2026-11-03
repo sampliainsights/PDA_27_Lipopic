@@ -616,8 +616,8 @@ const CONFIG = {
     return [
       { name: 'CSV export', url: `${base}/export?format=csv${g}` },
       { name: 'gviz CSV',   url: `${base}/gviz/tq?tqx=out:csv&headers=1${g}` },
-      { name: 'gviz «Extracto 1»',       url: `${base}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodeURIComponent('Extracto 1')}` },
-      { name: 'gviz «Hoja vinculada 1»', url: `${base}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodeURIComponent('Hoja vinculada 1')}` }
+      { tab: true, name: 'gviz «Extracto 1»',       url: `${base}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodeURIComponent('Extracto 1')}` },
+      { tab: true, name: 'gviz «Hoja vinculada 1»', url: `${base}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodeURIComponent('Hoja vinculada 1')}` }
     ];
   },
   // ID de pregunta (cabecera de la hoja Samplia) → atributo del informe.
@@ -844,11 +844,15 @@ async function loadSheet(sh, canFetch, errors) {
   };
   if (canFetch) {
     // Todas las URL de la hoja a la vez; se usa la que trae más filas
-    const tries = await Promise.all(CONFIG.urlsFor(sh).map(async src => {
+    const attempt = list => Promise.all(list.map(async src => {
       try { return { ...take(await fetchText(src.url)), live: true, src }; }
       catch (e) { errors.push(`${sh.name} · ${src.name}: ${e.message}`); console.warn('[datos] ' + sh.name + ' · ' + src.name + ' falló:', e.message); return null; }
     }));
-    const best = tries.filter(Boolean).sort((a, b) => b.rows.length - a.rows.length)[0];
+    const pick = tries => tries.filter(Boolean).sort((a, b) => b.rows.length - a.rows.length)[0];
+    // Manda la pestaña de datos por defecto (export / gviz). Las pestañas con nombre solo se usan si ninguna de esas URL responde:
+    // elegir «la que más filas trae» podía acabar leyendo otra pestaña (Extracto / Hoja vinculada) y mostrar más filas que la hoja de datos.
+    let best = pick(await attempt(CONFIG.urlsFor(sh).filter(s => !s.tab)));
+    if (!best) best = pick(await attempt(CONFIG.urlsFor(sh).filter(s => s.tab)));
     if (best) { console.info('[datos] ' + sh.name + ': fuente usada ' + best.src.name + ' (' + best.rows.length + ' filas)'); return best; }
   }
   const el = document.getElementById(sh.snap);
