@@ -615,7 +615,9 @@ const CONFIG = {
     const base = 'https://docs.google.com/spreadsheets/d/' + sh.id, g = sh.gid ? '&gid=' + sh.gid : '';
     return [
       { name: 'CSV export', url: `${base}/export?format=csv${g}` },
-      { name: 'gviz CSV',   url: `${base}/gviz/tq?tqx=out:csv&headers=1${g}` }
+      { name: 'gviz CSV',   url: `${base}/gviz/tq?tqx=out:csv&headers=1${g}` },
+      { name: 'gviz «Extracto 1»',       url: `${base}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodeURIComponent('Extracto 1')}` },
+      { name: 'gviz «Hoja vinculada 1»', url: `${base}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodeURIComponent('Hoja vinculada 1')}` }
     ];
   },
   // ID de pregunta (cabecera de la hoja Samplia) → atributo del informe.
@@ -631,7 +633,9 @@ const CONFIG = {
   // Personas que dicen no haber recibido o probado el producto: sus respuestas no valoran el producto y se excluyen del informe
   // Regla de visibilidad: las respuestas abiertas que contengan estas palabras (sin tildes ni mayúsculas) no se muestran ni se clasifican; sus valoraciones numéricas y su decisión de compra sí cuentan
   hideOpen: /salmon/,
-  notReceived: null,  // Hoja 1: incluir solo a quien respondió «Sí, lo he recibido.» en la columna I; el filtro por texto queda desactivado a propósito
+  notReceived: null,  // el filtro por texto queda desactivado a propósito
+  // true = se muestran TODAS las filas de las hojas, también las de quien respondió «No, no lo he recibido.» en la columna «recibido». Pon false para volver a excluirlas.
+  includeAllRows: true,
   // Hoja de respuestas de Google Forms: las cabeceras son el texto de la pregunta, no un question_id
   attrs: [
     { k: 'glob', label: 'Valoración global',        short: 'Valoración global', art: 'La valoración global',      rx: /valoraci[oó]n global/i, q: '¿Cuál es tu valoración global de este producto?' },
@@ -769,7 +773,7 @@ function fromSamplia(matrix) {
   const head = ['Marca temporal', ...CONFIG.attrs.map(a => a.q), '¿Comprarías este producto?', '¿Por qué?', 'Sentimiento'];
   let excl = 0;
   const body = matrix.slice(hi + 1).filter(r => {
-    if (rc >= 0 && /^no\b/.test(norm(String(r[rc] ?? '').trim()))) { excl++; return false; }
+    if (!CONFIG.includeAllRows && rc >= 0 && /^no\b/.test(norm(String(r[rc] ?? '').trim()))) { excl++; return false; }
     return true;
   }).map(r => [r[col('ts')], ...CONFIG.attrs.map(a => r[col(a.k)]), r[col('compra')], r[col('porque')], '']);
   state.preExcluded = excl;
@@ -816,7 +820,7 @@ function buildRows(matrix, allowEmpty) {
     const g = norm(get('gen')); o.gen = /^(f|mujer)/.test(g) ? 'Mujer' : /^(m|hombre)/.test(g) ? 'Hombre' : null;
     const age = parseInt(get('age'), 10);
     o.ageB = isNaN(age) ? null : (CONFIG.ageBands.find(([, lo, hi]) => age >= lo && age <= hi) || [null])[0];
-    if (CONFIG.attrs.some(a => o[a.k] != null) || o.compra) rows.push(o);
+    rows.push(o);   // todas las filas de la hoja cuentan; las celdas vacías simplemente no entran en las medias
   });
   if (!rows.length && !allowEmpty) throw new Error('No hay respuestas válidas');
   return rows;
@@ -839,10 +843,13 @@ async function loadSheet(sh, canFetch, errors) {
     return { rows, excluded: state.excluded, headers: state.headers };
   };
   if (canFetch) {
-    for (const src of CONFIG.urlsFor(sh)) {
-      try { return { ...take(await fetchText(src.url)), live: true }; }
-      catch (e) { errors.push(`${sh.name} · ${src.name}: ${e.message}`); console.warn('[datos] ' + sh.name + ' · ' + src.name + ' falló:', e.message); }
-    }
+    // Todas las URL de la hoja a la vez; se usa la que trae más filas
+    const tries = await Promise.all(CONFIG.urlsFor(sh).map(async src => {
+      try { return { ...take(await fetchText(src.url)), live: true, src }; }
+      catch (e) { errors.push(`${sh.name} · ${src.name}: ${e.message}`); console.warn('[datos] ' + sh.name + ' · ' + src.name + ' falló:', e.message); return null; }
+    }));
+    const best = tries.filter(Boolean).sort((a, b) => b.rows.length - a.rows.length)[0];
+    if (best) { console.info('[datos] ' + sh.name + ': fuente usada ' + best.src.name + ' (' + best.rows.length + ' filas)'); return best; }
   }
   const el = document.getElementById(sh.snap);
   const txt = el ? el.textContent.trim() : '';
